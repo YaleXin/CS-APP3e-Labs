@@ -1,18 +1,25 @@
 #include <stdio.h>
 #include "csapp.h"
+#include "sbuf.h"
 /* Recommended max cache and object sizes */
 #define MAX_CACHE_SIZE 1049000
 #define MAX_OBJECT_SIZE 102400
 
+#define N_THREADS 4
+#define SBUF_SIZE 16
+
 void doit(int fd);
 void clienterror(int fd, char *cause, char *errnum, 
-		 char *shortmsg, char *longmsg);
+         char *shortmsg, char *longmsg);
 void read_and_send_requesthdrs(rio_t* rp, int server_fd);
 void parse_header(char* buf, char* key, char* value);
 void get_target_server_info(char* uri, char* target_host, char* target_port);
 void get_origin_uri(char* old_uri, char* new_uri);
+void *thread_handle(void *vargp);
 /* You won't lose style points for including this long line in your code */
 static const char* user_agent_hdr = "User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:10.0.3) Gecko/20120305 Firefox/10.0.3\r\n";
+
+sbuf_t sbuf;
 
 int main(int argc, char** argv) {
     int listenfd, connfd;
@@ -28,6 +35,15 @@ int main(int argc, char** argv) {
 
     // argv[1] 是代理的工作端口
     listenfd = Open_listenfd(argv[1]);
+    
+    // 初始化缓冲区
+    sbuf_init(&sbuf, SBUF_SIZE);
+    // 创建工作线程组
+    pthread_t tid;
+    for(int i = 0; i < N_THREADS; i++){
+        Pthread_create(&tid, NULL, thread_handle, NULL);
+    }
+
     while (1) {
         clientlen = sizeof(clientaddr);
         // 等待客户端发起连接
@@ -35,8 +51,17 @@ int main(int argc, char** argv) {
         Getnameinfo((SA*)&clientaddr, clientlen, hostname, MAXLINE,
             port, MAXLINE, 0);
         printf("Accepted connection from (%s, %s)\n", hostname, port);
-        doit(connfd);                                             //line:netp:tiny:doit
-        Close(connfd);                                            //line:netp:tiny:close
+        // doit(connfd);
+        sbuf_insert(&sbuf, connfd);
+    }
+}
+
+void *thread_handle(void *vargp){
+    Pthread_detach(pthread_self());
+    while(1){
+        int connfd = sbuf_remove(&sbuf);
+        doit(connfd);
+        Close(connfd);
     }
 }
 

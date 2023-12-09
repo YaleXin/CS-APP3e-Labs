@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include "csapp.h"
+#include "cache.h"
 #include "sbuf.h"
 /* Recommended max cache and object sizes */
 #define MAX_CACHE_SIZE 1049000
@@ -10,7 +11,7 @@
 
 void doit(int fd);
 void clienterror(int fd, char *cause, char *errnum, 
-         char *shortmsg, char *longmsg);
+		 char *shortmsg, char *longmsg);
 void read_and_send_requesthdrs(rio_t* rp, int server_fd);
 void parse_header(char* buf, char* key, char* value);
 void get_target_server_info(char* uri, char* target_host, char* target_port);
@@ -20,6 +21,7 @@ void *thread_handle(void *vargp);
 static const char* user_agent_hdr = "User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:10.0.3) Gecko/20120305 Firefox/10.0.3\r\n";
 
 sbuf_t sbuf;
+caches my_caches;
 
 int main(int argc, char** argv) {
     int listenfd, connfd;
@@ -36,6 +38,9 @@ int main(int argc, char** argv) {
     // argv[1] 是代理的工作端口
     listenfd = Open_listenfd(argv[1]);
     
+    // 初始化 cache
+    cache_init(&my_caches);
+
     // 初始化缓冲区
     sbuf_init(&sbuf, SBUF_SIZE);
     // 创建工作线程组
@@ -83,34 +88,52 @@ void doit(int cliend_fd) {
     }                                                    //line:netp:doit:endrequesterr
     char target_host[100], target_port[6];
     get_target_server_info(uri, target_host, target_port);
-
-    // 和目标服务器建立连接
-    int server_fd = Open_clientfd(target_host, target_port);
-    printf("server_fd = %d\n", server_fd);
-
-    // 先发送请求行 
+    
     char new_uri[MAXLINE];
     get_origin_uri(uri, new_uri);
-    printf("client's target_host : %s, target_port : %s target_uri : %s\n", target_host, target_port, new_uri);
-    sprintf(buf, "%s %s %s\n", method, new_uri, "HTTP/1.0");
-    Rio_writen(server_fd, buf, strlen(buf));
 
-    rio_t server_rio;
-    Rio_readinitb(&server_rio, server_fd);
-    // 再发送请求报头 
-    read_and_send_requesthdrs(&client_rio, server_fd);
-    
+    int get_cache_status;
+    unsigned char content[MAX_OBJECT_SIZE];
+    // 先根据 uri 查询缓存是否命中
+    get_cache(&my_caches, new_uri, content, &get_cache_status);
+    // 缓存命中
+    if(get_cache_status){
+        printf("cache fit! uri = %s\n", new_uri);
+        Rio_writen(cliend_fd, content, sizeof(content));
+    } else{
+        // 和目标服务器建立连接
+        int server_fd = Open_clientfd(target_host, target_port);
+        printf("server_fd = %d\n", server_fd);
 
-    // 读取目标服务器返回的内容
-    char rsp_buf[MAXLINE];
-    // 由于响应包可能同时有文本和二进制，因此应该用 Rio_readnb
-    while(Rio_readnb(&server_rio, rsp_buf, sizeof(rsp_buf))){
-        printf("rsp_buf = %s\n", rsp_buf);
-        // 发送目标服务返回的响应给客户端
-        Rio_writen(cliend_fd, rsp_buf, sizeof(rsp_buf));
-    } 
+        // 先发送请求行 
+        printf("client's target_host : %s, target_port : %s target_uri : %s\n", target_host, target_port, new_uri);
+        sprintf(buf, "%s %s %s\n", method, new_uri, "HTTP/1.0");
+        Rio_writen(server_fd, buf, strlen(buf));
+
+        rio_t server_rio;
+        Rio_readinitb(&server_rio, server_fd);
+        // 再发送请求报头 
+        read_and_send_requesthdrs(&client_rio, server_fd);
+        
+        // 读取目标服务器返回的内容
+        char rsp_buf[MAXLINE];
+        // 由于响应包可能同时有文本和二进制，因此应该用 Rio_readnb
+        size_t buf_size = 0, total_size = 0;
+        while((buf_size = Rio_readnb(&server_rio, rsp_buf, sizeof(rsp_buf)))){
+            printf("rsp_buf = %s\n", rsp_buf);
+            // 发送目标服务返回的响应给客户端
+            Rio_writen(cliend_fd, rsp_buf, sizeof(rsp_buf));
+            // 接着上次写入的地方，继续将服务器返回的内容复制到content中
+            memcpy((void*)(content + total_size), (void*)rsp_buf, buf_size);
+            total_size += buf_size;
+        } 
+        int put_cache_status;
+        // 将本次请求响应放到缓存中
+        put_cache(&my_caches, new_uri, content, total_size, &put_cache_status);
+        printf("cache miss! uri = %s, total_size = %ld, put_cache status = %d\n", new_uri, total_size, put_cache_status);
+        Close(server_fd);
+    }
     
-    Close(server_fd);
 }
 
 // 将包装过的请求uri解析出原始的uri

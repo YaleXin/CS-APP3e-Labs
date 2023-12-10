@@ -11,7 +11,7 @@
 
 void doit(int fd);
 void clienterror(int fd, char *cause, char *errnum, 
-		 char *shortmsg, char *longmsg);
+         char *shortmsg, char *longmsg);
 void read_and_send_requesthdrs(rio_t* rp, int server_fd);
 void parse_header(char* buf, char* key, char* value);
 void get_target_server_info(char* uri, char* target_host, char* target_port);
@@ -88,17 +88,17 @@ void doit(int cliend_fd) {
     }                                                    //line:netp:doit:endrequesterr
     char target_host[100], target_port[6];
     get_target_server_info(uri, target_host, target_port);
-    
+
     char new_uri[MAXLINE];
     get_origin_uri(uri, new_uri);
 
     int get_cache_status;
     unsigned char content[MAX_OBJECT_SIZE];
     // 先根据 uri 查询缓存是否命中
-    get_cache(&my_caches, new_uri, content, &get_cache_status);
+    get_cache(&my_caches, uri, content, &get_cache_status);
     // 缓存命中
     if(get_cache_status){
-        printf("cache fit! uri = %s\n", new_uri);
+        printf("cache fit! uri = %s\n", uri);
         Rio_writen(cliend_fd, content, sizeof(content));
     } else{
         // 和目标服务器建立连接
@@ -129,8 +129,8 @@ void doit(int cliend_fd) {
         } 
         int put_cache_status;
         // 将本次请求响应放到缓存中
-        put_cache(&my_caches, new_uri, content, total_size, &put_cache_status);
-        printf("cache miss! uri = %s, total_size = %ld, put_cache status = %d\n", new_uri, total_size, put_cache_status);
+        put_cache(&my_caches, uri, content, total_size, &put_cache_status);
+        printf("cache miss! uri = %s, total_size = %ld, put_cache status = %d\n", uri, total_size, put_cache_status);
         Close(server_fd);
     }
     
@@ -146,14 +146,16 @@ void get_origin_uri(char* old_uri, char* new_uri) {
     // 跳过两个斜杠
     old_uri_idx += 2;
     // 跳过域名
-    while (old_uri[old_uri_idx] != ':') {
+    while (old_uri[old_uri_idx] != ':' && old_uri[old_uri_idx] != '/') {
         old_uri_idx++;
     }
-    // 跳过冒号
-    old_uri_idx++;
-    // 跳过端口
-    while (old_uri[old_uri_idx] >= '0' && old_uri[old_uri_idx] <= '9') {
+    if(old_uri[old_uri_idx] == ':'){
+        // 跳过冒号
         old_uri_idx++;
+        // 跳过端口
+        while (old_uri[old_uri_idx] >= '0' && old_uri[old_uri_idx] <= '9') {
+            old_uri_idx++;
+        }
     }
     strcpy(new_uri, old_uri + old_uri_idx);
 }
@@ -167,10 +169,18 @@ void get_target_server_info(char* uri, char* target_host, char* target_port) {
     // 跳过第一个冒号和协议后面的两个斜杠
     idx += 3;
     int host_idx = 0;
-    while (uri[idx] != ':') {
+    // 跳过域名
+    while (uri[idx] != ':' && uri[idx] != '/') {
         target_host[host_idx++] = uri[idx++];
     }
     target_host[host_idx] = '\0';
+    // 不带端口，即默认的80
+    if(uri[idx] == '/'){
+        target_port[0] = '8';
+        target_port[1] = '0';
+        target_port[3] = '\0';
+        return;
+    }
     // 跳过第二个冒号
     idx++;
     int port_idx = 0;
